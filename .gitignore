@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Environments
+.venv/
+.env
+*.env
+
+# Large/generated project outputs
+checkpoints/
+reports/
+logs/
+runs/
+data/
+
+# Model/cache files
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+.cache/
+hf_cache/
+
+# System/editor
+.DS_Store
+.vscode/
+.idea/

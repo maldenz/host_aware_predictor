@@ -3,7 +3,7 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "host-aware-predictor"
+name = "host_aware_predictor"
 version = "0.1.0"
 description = "Minimal host-aware predictor using Nucleotide Transformer embeddings and concat fusion."
 readme = "README.md"
@@ -23,14 +23,18 @@ hap-predict = "host_aware_predictor.inference:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[project.optional-dependencies]
+geneformer = [
+    "anndata",
+    "scanpy",
+    "loompy",
+    "datasets",
+    "tqdm",
+]
+test = [
+    "pytest",
+]
+
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
-
-dependencies = [
-  "anndata",
-  "scanpy",
-  "loompy",
-  "datasets",
-  "tqdm",
-]

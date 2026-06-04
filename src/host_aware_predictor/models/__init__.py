@@ -12,6 +12,12 @@ from .nucleotide_transformer import (
     NucleotideTransformerOutput,
     NucleotideTransformerWrapper,
 )
+from .concat_head import (
+    ConcatExpressionHead,
+    ConcatExpressionHeadConfig,
+    ConcatExpressionOutput,
+    FrozenConcatExpressionPredictor,
+)
 
 __all__ = [
     "GeneformerConfig",

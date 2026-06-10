@@ -1,31 +1,19 @@
-"""Concat-fusion expression head.
+"""Concat-fusion expression head and frozen-encoder predictor wrapper.
 
-This is the initial host-aware baseline:
-
-    expression = head(concat(sequence_embedding, host_embedding))
-
-The two embedders are assumed to be frozen pretrained models from published
-studies. The concat head is the only trainable unit.
+The concat head implementation now lives in ``fusion_heads.py`` so the same
+training stack can build concat, FiLM, and future query heads from one registry.
+This module is kept as a backwards-compatible import location.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping
 
 import torch
 from torch import nn
 
-
-@dataclass(frozen=True)
-class ConcatExpressionHeadConfig:
-    """Configuration for the trainable concat expression head."""
-
-    sequence_embedding_dim: int
-    host_embedding_dim: int
-    hidden_dims: tuple[int, ...] = ()
-    dropout: float = 0.0
-    output_dim: int = 1
+from .fusion_heads import ConcatExpressionHead, ConcatExpressionHeadConfig
 
 
 @dataclass(frozen=True)
@@ -35,24 +23,6 @@ class ConcatExpressionOutput:
     expression: torch.Tensor
     sequence_embedding: torch.Tensor
     host_embedding: torch.Tensor
-
-
-def _validate_positive_int(value: int, *, name: str) -> int:
-    value = int(value)
-    if value <= 0:
-        raise ValueError(f"{name} must be positive, got {value!r}.")
-    return value
-
-
-def _normalise_hidden_dims(hidden_dims: Sequence[int] | None) -> tuple[int, ...]:
-    if hidden_dims is None:
-        return ()
-
-    dims = tuple(int(dim) for dim in hidden_dims)
-    for index, dim in enumerate(dims):
-        _validate_positive_int(dim, name=f"hidden_dims[{index}]")
-
-    return dims
 
 
 def _freeze_encoder(encoder: nn.Module) -> None:
@@ -75,7 +45,10 @@ def _infer_embedding_dim(encoder: nn.Module, *, name: str) -> int:
             f"Pass {name}_embedding_dim explicitly."
         )
 
-    return _validate_positive_int(int(embedding_dim), name=f"{name}_embedding_dim")
+    embedding_dim = int(embedding_dim)
+    if embedding_dim <= 0:
+        raise ValueError(f"{name}_embedding_dim must be positive, got {embedding_dim!r}.")
+    return embedding_dim
 
 
 def _extract_pooled_embedding(output: Any, *, name: str) -> torch.Tensor:
@@ -126,122 +99,6 @@ def _run_frozen_encoder(
     return _extract_pooled_embedding(output, name=name).detach()
 
 
-class ConcatExpressionHead(nn.Module):
-    """Trainable MLP over concatenated sequence and host embeddings.
-
-    With the default ``hidden_dims=()``, this is simply:
-
-        Linear(sequence_embedding_dim + host_embedding_dim, output_dim)
-
-    Use ``hidden_dims`` only when you want a small nonlinear head while keeping
-    the frozen embedders unchanged.
-    """
-
-    def __init__(
-        self,
-        sequence_embedding_dim: int,
-        host_embedding_dim: int,
-        *,
-        hidden_dims: Sequence[int] | None = None,
-        dropout: float = 0.0,
-        output_dim: int = 1,
-    ) -> None:
-        super().__init__()
-
-        sequence_embedding_dim = _validate_positive_int(
-            sequence_embedding_dim,
-            name="sequence_embedding_dim",
-        )
-        host_embedding_dim = _validate_positive_int(
-            host_embedding_dim,
-            name="host_embedding_dim",
-        )
-        output_dim = _validate_positive_int(output_dim, name="output_dim")
-        hidden_dims_tuple = _normalise_hidden_dims(hidden_dims)
-
-        dropout = float(dropout)
-        if not 0.0 <= dropout < 1.0:
-            raise ValueError(f"dropout must be in [0, 1), got {dropout!r}.")
-
-        self.config = ConcatExpressionHeadConfig(
-            sequence_embedding_dim=sequence_embedding_dim,
-            host_embedding_dim=host_embedding_dim,
-            hidden_dims=hidden_dims_tuple,
-            dropout=dropout,
-            output_dim=output_dim,
-        )
-
-        input_dim = sequence_embedding_dim + host_embedding_dim
-        dims = (input_dim, *hidden_dims_tuple, output_dim)
-
-        layers: list[nn.Module] = []
-        for layer_index, (in_dim, out_dim) in enumerate(zip(dims[:-1], dims[1:])):
-            layers.append(nn.Linear(in_dim, out_dim))
-
-            is_last_layer = layer_index == len(dims) - 2
-            if not is_last_layer:
-                layers.append(nn.GELU())
-                if dropout > 0.0:
-                    layers.append(nn.Dropout(dropout))
-
-        self.network = nn.Sequential(*layers)
-
-    @property
-    def input_dim(self) -> int:
-        return self.config.sequence_embedding_dim + self.config.host_embedding_dim
-
-    def _validate_embedding(
-        self,
-        embedding: torch.Tensor,
-        *,
-        name: str,
-        expected_dim: int,
-    ) -> torch.Tensor:
-        if not torch.is_tensor(embedding):
-            raise TypeError(f"{name} must be a torch.Tensor, got {type(embedding).__name__}.")
-
-        if embedding.ndim != 2:
-            raise ValueError(
-                f"{name} must be shaped [batch, dim], got {tuple(embedding.shape)}."
-            )
-
-        if embedding.shape[-1] != expected_dim:
-            raise ValueError(
-                f"{name} has embedding dim {embedding.shape[-1]}, "
-                f"expected {expected_dim}."
-            )
-
-        if not embedding.is_floating_point():
-            raise TypeError(f"{name} must be floating-point, got {embedding.dtype}.")
-
-        return embedding
-
-    def forward(
-        self,
-        sequence_embedding: torch.Tensor,
-        host_embedding: torch.Tensor,
-    ) -> torch.Tensor:
-        sequence_embedding = self._validate_embedding(
-            sequence_embedding,
-            name="sequence_embedding",
-            expected_dim=self.config.sequence_embedding_dim,
-        )
-        host_embedding = self._validate_embedding(
-            host_embedding,
-            name="host_embedding",
-            expected_dim=self.config.host_embedding_dim,
-        )
-
-        if sequence_embedding.shape[0] != host_embedding.shape[0]:
-            raise ValueError(
-                "sequence_embedding and host_embedding batch sizes must match; "
-                f"got {sequence_embedding.shape[0]} and {host_embedding.shape[0]}."
-            )
-
-        fused = torch.cat((sequence_embedding, host_embedding), dim=-1)
-        return self.network(fused)
-
-
 class FrozenConcatExpressionPredictor(nn.Module):
     """Frozen embedders plus trainable concat expression head.
 
@@ -259,7 +116,7 @@ class FrozenConcatExpressionPredictor(nn.Module):
         *,
         sequence_embedding_dim: int | None = None,
         host_embedding_dim: int | None = None,
-        hidden_dims: Sequence[int] | None = None,
+        hidden_dims: tuple[int, ...] | list[int] | None = None,
         dropout: float = 0.0,
         output_dim: int = 1,
         head: ConcatExpressionHead | None = None,
@@ -345,16 +202,7 @@ class FrozenConcatExpressionPredictor(nn.Module):
         host_kwargs: Mapping[str, Any] | None = None,
         return_embeddings: bool = False,
     ) -> torch.Tensor | ConcatExpressionOutput:
-        """Predict expression from raw inputs or precomputed embeddings.
-
-        Examples:
-            model(sequence_inputs=["ACGT"], host_inputs=geneformer_token_ids)
-
-            model(
-                sequence_embedding=precomputed_seq_emb,
-                host_embedding=precomputed_host_emb,
-            )
-        """
+        """Predict expression from raw inputs or precomputed embeddings."""
 
         if sequence_embedding is not None and sequence_inputs is not None:
             raise ValueError("Pass either sequence_inputs or sequence_embedding, not both.")

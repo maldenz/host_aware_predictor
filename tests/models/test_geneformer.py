@@ -8,7 +8,7 @@ import pytest
 import torch
 from torch import nn
 
-from host_aware_predictor.models import geneformer as gf
+from host_aware_predictor.external import geneformer as gf
 
 
 class DummyGeneformerHFConfig:

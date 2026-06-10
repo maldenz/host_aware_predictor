@@ -8,7 +8,7 @@ import pytest
 import torch
 from torch import nn
 
-from host_aware_predictor.models import nucleotide_transformer as nt
+from host_aware_predictor.external import nucleotide_transformer as nt
 
 
 class DummyNTv3Config:

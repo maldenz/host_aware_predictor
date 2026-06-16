@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import math
 import random
+import re
 from contextlib import nullcontext
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +29,35 @@ from .element_quantification_dataset import (
     read_split_names,
 )
 from .metrics import regression_metrics
+
+
+
+
+def safe_run_name(value: str) -> str:
+    """Return a filesystem-safe run/report name component."""
+
+    value = str(value).strip()
+    value = re.sub(r"[^A-Za-z0-9_.=-]+", "_", value)
+    value = value.strip("._-")
+    if not value:
+        raise ValueError("Run name cannot be empty after sanitization.")
+    return value
+
+
+def ensure_run_name(args: Any) -> None:
+    """Set args.run_name to the default timestamp+head prefix when absent."""
+
+    run_name = getattr(args, "run_name", None)
+    if run_name is None:
+        timestamp_format = getattr(args, "timestamp_format", "%Y%m%d-%H%M%S")
+        run_name = f"{datetime.now().strftime(timestamp_format)}_{args.head}"
+    args.run_name = safe_run_name(run_name)
+
+
+def run_output_path(args: Any, suffix: str) -> Path:
+    """Path for a run-scoped artifact named <run_name>_<suffix>."""
+
+    return Path(args.output_dir) / f"{args.run_name}_{suffix}"
 
 
 def set_seed(seed: int) -> None:
@@ -61,6 +92,8 @@ def save_json(path: Path, obj: object) -> None:
 def resolve_paths(args: Any) -> None:
     """Fill derived path arguments in-place."""
 
+    ensure_run_name(args)
+
     processed = Path(args.processed_dir)
     args.processed_dir = processed
     args.dna_embedding_dir = Path(args.dna_embedding_dir) if args.dna_embedding_dir else processed / "dna_emb" / "by_name"
@@ -85,10 +118,22 @@ def resolve_paths(args: Any) -> None:
             condition_label = "_".join(str(condition) for condition in args.conditions)
         else:
             condition_label = "all_conditions"
-        args.output_dir = Path("runs") / f"{args.head}_head" / f"{condition_label}_{args.target_col}"
+        args.output_dir = Path("runs") / f"{args.head}_head" / f"{condition_label}_{args.target_col}" / args.run_name
     else:
         args.output_dir = Path(args.output_dir)
 
+def enforce_host_specific_baseline(args: Any) -> None:
+    """Require sequence-only baseline training to use exactly one condition."""
+
+    if getattr(args, "head", None) != "sequence_only":
+        return
+
+    conditions = getattr(args, "conditions", None)
+    if conditions is None or len(conditions) != 1:
+        raise ValueError(
+            "The sequence_only baseline requires exactly one cell: "
+            "pass --condition <cell> or --conditions <cell>."
+        )
 
 def make_datasets(args: Any) -> tuple[dict[str, ElementQuantificationDataset], dict[str, Any], pd.DataFrame]:
     known_conditions = discover_conditions(args.host_embedding_dir)
@@ -373,6 +418,7 @@ def run_training(args: Any) -> None:
     """Run one complete train/validate/test job from an argparse namespace."""
 
     resolve_paths(args)
+    enforce_host_specific_baseline(args)
     set_seed(args.seed)
 
     if args.device == "auto":
@@ -384,7 +430,7 @@ def run_training(args: Any) -> None:
 
     datasets, reports, df = make_datasets(args)
     reports_dict = {split: report.__dict__ for split, report in reports.items()}
-    save_json(args.output_dir / "split_build_report.json", reports_dict)
+    save_json(run_output_path(args, "split_build_report.json"), reports_dict)
 
     train_targets = np.asarray([record.target for record in datasets["train"].records], dtype=np.float64)
     if args.standardize_target:
@@ -415,6 +461,11 @@ def run_training(args: Any) -> None:
     use_weights = args.weight_col is not None
 
     config = {
+        "run": {
+            "name": args.run_name,
+            "output_dir": str(args.output_dir),
+            "artifact_prefix": f"{args.run_name}_",
+        },
         "args": to_serializable(vars(args)),
         "head": args.head,
         "head_config": expression_head_config_dict(model),
@@ -440,14 +491,14 @@ def run_training(args: Any) -> None:
         "trainable_parameters": sum(p.numel() for p in model.parameters() if p.requires_grad),
         "device": str(device),
     }
-    save_json(args.output_dir / "config.json", config)
+    save_json(run_output_path(args, "config.json"), config)
     print(json.dumps({"config": config}, indent=2, default=str))
 
     best_val_mse = float("inf")
     best_epoch = -1
     epochs_without_improvement = 0
     history: list[dict[str, object]] = []
-    best_path = args.output_dir / f"best_{args.head}_head.pt"
+    best_path = run_output_path(args, f"best_{args.head}_head.pt")
 
     for epoch in range(1, args.epochs + 1):
         train_metrics = train_one_epoch(
@@ -477,7 +528,7 @@ def run_training(args: Any) -> None:
 
         row = {"epoch": epoch, "train": train_metrics, "val": val_metrics}
         history.append(row)
-        save_json(args.output_dir / "history.json", history)
+        save_json(run_output_path(args, "history.json"), history)
 
         print(
             f"epoch={epoch:03d} "
@@ -538,9 +589,9 @@ def run_training(args: Any) -> None:
         final_metrics[split] = metrics
         assert predictions is not None
         predictions = predictions.rename(columns={"y_true": f"y_true_{args.target_col}", "y_pred": f"y_pred_{args.target_col}"})
-        predictions.to_csv(args.output_dir / f"{split}_predictions.tsv", sep="\t", index=False)
+        predictions.to_csv(run_output_path(args, f"{split}_predictions.tsv"), sep="\t", index=False)
 
-    save_json(args.output_dir / "metrics.json", final_metrics)
+    save_json(run_output_path(args, "metrics.json"), final_metrics)
     checkpoint["final_metrics"] = final_metrics
     torch.save(checkpoint, best_path)
 
@@ -550,12 +601,15 @@ def run_training(args: Any) -> None:
 
 __all__ = [
     "build_model_from_args",
+    "enforce_host_specific_baseline",
     "evaluate",
     "loss_from_batch",
     "make_datasets",
     "make_loader",
     "resolve_paths",
+    "run_output_path",
     "run_training",
+    "safe_run_name",
     "save_json",
     "set_seed",
     "to_serializable",

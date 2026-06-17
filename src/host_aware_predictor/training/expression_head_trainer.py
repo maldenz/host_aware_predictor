@@ -17,7 +17,8 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader
 
-from host_aware_predictor.models.fusion_heads import build_expression_head, expression_head_config_dict
+from host_aware_predictor.models.registry import build_expression_head
+from host_aware_predictor.models.utils import expression_head_config_dict
 
 from .element_quantification_dataset import (
     ElementQuantificationDataset,
@@ -118,7 +119,17 @@ def resolve_paths(args: Any) -> None:
             condition_label = "_".join(str(condition) for condition in args.conditions)
         else:
             condition_label = "all_conditions"
-        args.output_dir = Path("runs") / f"{args.head}_head" / f"{condition_label}_{args.target_col}" / args.run_name
+
+        run_name = getattr(args, "run_name", None)
+        if run_name is None:
+            run_name = args.head
+
+        args.output_dir = (
+            Path("runs")
+            / f"{args.head}_head"
+            / f"{condition_label}_{args.target_col}"
+            / str(run_name)
+        )
     else:
         args.output_dir = Path(args.output_dir)
 
@@ -410,6 +421,13 @@ def build_model_from_args(args: Any, *, sequence_embedding_dim: int, host_embedd
         film_gamma_scale=args.film_gamma_scale,
         film_include_host_skip=args.film_include_host_skip,
         film_identity_init=not args.no_film_identity_init,
+        query_num_heads=getattr(args, "query_num_heads", 4),
+        query_num_sequence_slots=getattr(args, "query_num_sequence_slots", 8),
+        query_num_queries=getattr(args, "query_num_queries", 4),
+        query_use_layer_norm=not getattr(args, "query_no_layer_norm", False),
+        query_include_sequence_skip=not getattr(args, "query_no_sequence_skip", False),
+        query_include_host_skip=getattr(args, "query_include_host_skip", False),
+        query_pooling=getattr(args, "query_pooling", "mean"),
         **extra_head_kwargs,
     )
 

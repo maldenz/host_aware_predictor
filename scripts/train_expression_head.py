@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Train concat, FiLM, or future expression heads on precomputed embeddings.
+"""Train concat, FiLM, query, sequence-only, or future expression heads on precomputed embeddings.
 
 Default multi-condition layout from repository root:
 
@@ -27,7 +27,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from host_aware_predictor.models.fusion_heads import available_head_names  # noqa: E402
+from host_aware_predictor.models.registry import available_head_names  # noqa: E402
 from host_aware_predictor.training.expression_head_trainer import run_training  # noqa: E402
 
 
@@ -83,6 +83,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--film-gamma-scale", type=float, default=1.0)
     parser.add_argument("--film-include-host-skip", action="store_true", help="Concatenate a projected host skip vector after FiLM modulation.")
     parser.add_argument("--no-film-identity-init", action="store_true", help="Do not zero-init the final FiLM generator layer.")
+    
+    # Query-specific args. These are ignored by concat/FiLM/sequence_only.
+    parser.add_argument("--query-num-heads", type=int, default=4, help="Number of attention heads for the query head.")
+    parser.add_argument("--query-num-sequence-slots", "--query-num-slots", dest="query_num_sequence_slots", type=int, default=8, help="Number of learned latent sequence slots projected from each pooled sequence embedding.")
+    parser.add_argument("--query-num-queries", type=int, default=4, help="Number of host-derived query vectors per sample.")
+    parser.add_argument("--query-pooling", choices=("mean", "flatten"), default="mean", help="How to pool query attention outputs before prediction.")
+    parser.add_argument("--query-no-layer-norm", action="store_true", help="Disable LayerNorm in the query head.")
+    parser.add_argument("--query-no-sequence-skip", action="store_true", help="Disable the direct projected sequence skip path in the query head.")
+    parser.add_argument("--query-include-host-skip", action="store_true", help="Concatenate a projected host skip vector after query attention.")
+
     parser.add_argument("--head-kwargs-json", type=str, default="{}", help="Extra JSON kwargs reserved for future/custom registered heads.")
 
     # Optimization.

@@ -1,4 +1,4 @@
-"""Concatenation expression head."""
+"""Sequence-only expression baseline head."""
 
 from __future__ import annotations
 
@@ -12,8 +12,8 @@ from .utils import build_mlp, normalise_hidden_dims, validate_dropout, validate_
 
 
 @dataclass(frozen=True)
-class ConcatExpressionHeadConfig:
-    """Configuration for the trainable concat expression head."""
+class SequenceOnlyExpressionHeadConfig:
+    """Configuration for a host-compatible sequence-only baseline head."""
 
     sequence_embedding_dim: int
     host_embedding_dim: int
@@ -23,8 +23,12 @@ class ConcatExpressionHeadConfig:
     activation: str = "gelu"
 
 
-class ConcatExpressionHead(EmbeddingFusionHead):
-    """Trainable MLP over concatenated sequence and host embeddings."""
+class SequenceOnlyExpressionHead(EmbeddingFusionHead):
+    """Trainable MLP over sequence embeddings only.
+
+    The shared forward signature is preserved for training-loop compatibility,
+    but host_embedding is deliberately ignored.
+    """
 
     def __init__(
         self,
@@ -47,7 +51,7 @@ class ConcatExpressionHead(EmbeddingFusionHead):
         hidden_dims_tuple = normalise_hidden_dims(hidden_dims)
         dropout = validate_dropout(dropout)
 
-        self.config = ConcatExpressionHeadConfig(
+        self.config = SequenceOnlyExpressionHeadConfig(
             sequence_embedding_dim=self.sequence_embedding_dim,
             host_embedding_dim=self.host_embedding_dim,
             hidden_dims=hidden_dims_tuple,
@@ -56,7 +60,7 @@ class ConcatExpressionHead(EmbeddingFusionHead):
             activation=activation,
         )
         self.network = build_mlp(
-            self.input_dim,
+            self.sequence_embedding_dim,
             hidden_dims_tuple,
             output_dim,
             dropout=dropout,
@@ -65,15 +69,20 @@ class ConcatExpressionHead(EmbeddingFusionHead):
 
     @property
     def input_dim(self) -> int:
-        return self.sequence_embedding_dim + self.host_embedding_dim
+        return self.sequence_embedding_dim
 
     def forward(
         self,
         sequence_embedding: torch.Tensor,
-        host_embedding: torch.Tensor,
+        host_embedding: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        sequence_embedding, host_embedding = self._validate_pair(sequence_embedding, host_embedding)
-        return self.network(torch.cat((sequence_embedding, host_embedding), dim=-1))
+        del host_embedding
+        sequence_embedding = self._validate_embedding(
+            sequence_embedding,
+            name="sequence_embedding",
+            expected_dim=self.sequence_embedding_dim,
+        )
+        return self.network(sequence_embedding)
 
 
-__all__ = ["ConcatExpressionHead", "ConcatExpressionHeadConfig"]
+__all__ = ["SequenceOnlyExpressionHead", "SequenceOnlyExpressionHeadConfig"]
